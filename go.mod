@@ -1,4 +1,4 @@
-module github.com/pion/srtp/v2
+module github.com/San9H0/srtp/v2
 
 go 1.14
 
