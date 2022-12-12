@@ -18,6 +18,7 @@ const defaultSessionSRTPReplayProtectionWindow = 64
 type SessionSRTP struct {
 	session
 	writeStream *WriteStreamSRTP
+	PlainRTP    bool
 }
 
 // NewSessionSRTP creates a SRTP session using conn as the underlying transport.
@@ -57,6 +58,7 @@ func NewSessionSRTP(conn net.Conn, config *Config) (*SessionSRTP, error) { //nol
 			bufferFactory: config.BufferFactory,
 			log:           loggerFactory.NewLogger("srtp"),
 		},
+		PlainRTP: config.PlainRTP,
 	}
 	s.writeStream = &WriteStreamSRTP{s}
 
@@ -145,6 +147,21 @@ func (s *SessionSRTP) writeRTP(header *rtp.Header, payload []byte) (int, error) 
 	ibuf := bufferpool.Get()
 	defer bufferpool.Put(ibuf)
 
+	if s.PlainRTP {
+		p := rtp.Packet{
+			Header:  *header,
+			Payload: payload,
+		}
+		if header.Padding && len(payload) != 0 {
+			p.PaddingSize = payload[len(payload)-1]
+		}
+		buf := ibuf.([]byte)
+		n, err := p.MarshalTo(buf)
+		if err != nil {
+			return 0, err
+		}
+		return s.session.nextConn.Write(buf[:n])
+	}
 	s.session.localContextMutex.Lock()
 	encrypted, err := s.localContext.encryptRTP(ibuf.([]byte), header, payload)
 	s.session.localContextMutex.Unlock()
@@ -177,6 +194,14 @@ func (s *SessionSRTP) decrypt(buf []byte) error {
 	readStream, ok := r.(*ReadStreamSRTP)
 	if !ok {
 		return errFailedTypeAssertion
+	}
+
+	if s.PlainRTP {
+		_, err = readStream.write(buf)
+		if err != nil {
+			return err
+		}
+		return nil
 	}
 
 	decrypted, err := s.remoteContext.decryptRTP(buf, buf, h, headerLen)
